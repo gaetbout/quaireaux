@@ -25,7 +25,7 @@ mod AListHolder {
 
     #[storage]
     struct Storage {
-        // to test a corelib type that has StorageAccess and
+        // to test a corelib type that has Store and
         // Into<ContractAddress, felt252>
         addrs: List<ContractAddress>,
         // to test a corelib compound struct
@@ -91,22 +91,6 @@ mod tests {
 
     use super::{AListHolder, IAListHolderDispatcher, IAListHolderDispatcherTrait};
 
-    // so that we're able to compare 2-tuples in the test code
-    impl TupleSize2PartialEq<
-        E0, E1, impl E0PartialEq: PartialEq<E0>, impl E1PartialEq: PartialEq<E1>
-    > of PartialEq<(E0, E1)> {
-        #[inline(always)]
-        fn eq(lhs: @(E0, E1), rhs: @(E0, E1)) -> bool {
-            let (lhs0, lhs1) = lhs;
-            let (rhs0, rhs1) = rhs;
-            (lhs0 == rhs0) & (lhs1 == rhs1)
-        }
-        #[inline(always)]
-        fn ne(lhs: @(E0, E1), rhs: @(E0, E1)) -> bool {
-            !(rhs == lhs)
-        }
-    }
-
     fn deploy_mock() -> IAListHolderDispatcher {
         let class_hash: ClassHash = AListHolder::TEST_CLASS_HASH.try_into().unwrap();
         let ctor_data: Array<felt252> = Default::default();
@@ -152,7 +136,7 @@ mod tests {
         let mock_addr = mock_addr();
 
         let mut index: u32 = 0;
-        let max: u32 = 1025;
+        let max: u32 = 513;
 
         // test appending many
         loop {

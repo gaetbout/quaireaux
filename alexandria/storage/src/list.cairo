@@ -1,10 +1,10 @@
-use hash::LegacyHash;
+use array::ArrayTrait;
 use integer::U32DivRem;
 use option::OptionTrait;
-use array::ArrayTrait;
+use poseidon::poseidon_hash_span;
 use starknet::{storage_read_syscall, storage_write_syscall, SyscallResult, SyscallResultTrait};
 use starknet::storage_access::{
-    StorageAccess, StorageBaseAddress, storage_address_to_felt252, storage_address_from_base,
+    Store, StorageBaseAddress, storage_address_to_felt252, storage_address_from_base,
     storage_address_from_base_and_offset, storage_base_address_from_felt252
 };
 use traits::{Default, DivRem, IndexView, Into, TryInto};
@@ -29,36 +29,9 @@ trait ListTrait<T> {
     fn array(self: @List<T>) -> Array<T>;
 }
 
-// when writing elements in storage, we need to know how many storage slots
-// they take up to properly calculate the offset into a storage segment
-// that's what this trait provides
-// it's very similar to the `size_internal` function in StorageAccess trait
-// with one crutial difference - this function does not need a T element
-// to return the size of the T element!
-trait StorageSize<T> {
-    fn storage_size() -> u8;
-}
-
-// any type that can Into to felt252 has a size of 1
-impl StorageSizeFelt252<T, impl TInto: Into<T, felt252>> of StorageSize<T> {
-    fn storage_size() -> u8 {
-        1
-    }
-}
-
-// u256 needs 2 storage slots
-impl StorageSizeU256 of StorageSize<u256> {
-    fn storage_size() -> u8 {
-        2
-    }
-}
 
 impl ListImpl<
-    T,
-    impl TCopy: Copy<T>,
-    impl TDrop: Drop<T>,
-    impl TStorageAccess: StorageAccess<T>,
-    impl TStorageSize: StorageSize<T>
+    T, impl TCopy: Copy<T>, impl TDrop: Drop<T>, impl TStore: Store<T>, 
 > of ListTrait<T> {
     fn len(self: @List<T>) -> u32 {
         *self.len
@@ -72,12 +45,11 @@ impl ListImpl<
         let (base, offset) = calculate_base_and_offset_for_index(
             self.base, self.len, self.storage_size
         );
-        StorageAccess::write_at_offset_internal(self.address_domain, base, offset, value)
-            .unwrap_syscall();
+        Store::write_at_offset(self.address_domain, base, offset, value).unwrap_syscall();
 
         let append_at = self.len;
         self.len += 1;
-        StorageAccess::write(self.address_domain, self.base, self.len);
+        Store::write(self.address_domain, self.base, self.len);
 
         append_at
     }
@@ -90,8 +62,7 @@ impl ListImpl<
         let (base, offset) = calculate_base_and_offset_for_index(
             *self.base, index, *self.storage_size
         );
-        let t = StorageAccess::read_at_offset_internal(*self.address_domain, base, offset)
-            .unwrap_syscall();
+        let t = Store::read_at_offset(*self.address_domain, base, offset).unwrap_syscall();
         Option::Some(t)
     }
 
@@ -100,8 +71,7 @@ impl ListImpl<
         let (base, offset) = calculate_base_and_offset_for_index(
             self.base, index, self.storage_size
         );
-        StorageAccess::write_at_offset_internal(self.address_domain, base, offset, value)
-            .unwrap_syscall();
+        Store::write_at_offset(self.address_domain, base, offset, value).unwrap_syscall();
     }
 
     fn pop_front(ref self: List<T>) -> Option<T> {
@@ -114,7 +84,7 @@ impl ListImpl<
         // only decrementing the len - makes it unaccessible through
         // the interfaces, next append will overwrite the values
         self.len -= 1;
-        StorageAccess::write(self.address_domain, self.base, self.len);
+        Store::write(self.address_domain, self.base, self.len);
 
         popped
     }
@@ -134,11 +104,7 @@ impl ListImpl<
 }
 
 impl AListIndexViewImpl<
-    T,
-    impl TCopy: Copy<T>,
-    impl TDrop: Drop<T>,
-    impl TStorageAccess: StorageAccess<T>,
-    impl TStorageSize: StorageSize<T>
+    T, impl TCopy: Copy<T>, impl TDrop: Drop<T>, impl TStore: Store<T>, 
 > of IndexView<List<T>, u32, T> {
     fn index(self: @List<T>, index: u32) -> T {
         self.get(index).expect('List index out of bounds')
@@ -183,41 +149,45 @@ fn calculate_base_and_offset_for_index(
 ) -> (StorageBaseAddress, u8) {
     let max_elements = POW2_8 / storage_size.into();
     let (key, offset) = U32DivRem::div_rem(index, max_elements.try_into().unwrap());
-
-    let segment_base = storage_base_address_from_felt252(
-        LegacyHash::hash(storage_address_to_felt252(storage_address_from_base(list_base)), key)
-    );
+    // hash the base address and the key which is the segment number
+    let addr_elements = array![
+        storage_address_to_felt252(storage_address_from_base(list_base)), key.into()
+    ];
+    let segment_base = storage_base_address_from_felt252(poseidon_hash_span(addr_elements.span()));
 
     (segment_base, offset.try_into().unwrap() * storage_size)
 }
 
-impl ListStorageAccess<T, impl TStorageSize: StorageSize<T>> of StorageAccess<List<T>> {
+impl ListStore<T, impl TStore: Store<T>> of Store<List<T>> {
     fn read(address_domain: u32, base: StorageBaseAddress) -> SyscallResult<List<T>> {
-        let len: u32 = StorageAccess::read(address_domain, base).unwrap_syscall();
-        let storage_size: u8 = StorageSize::<T>::storage_size();
+        let len: u32 = Store::read(address_domain, base).unwrap_syscall();
+        let storage_size: u8 = Store::<T>::size();
         Result::Ok(List { address_domain, base, len, storage_size })
     }
 
+    #[inline(always)]
     fn write(address_domain: u32, base: StorageBaseAddress, value: List<T>) -> SyscallResult<()> {
-        StorageAccess::write(address_domain, base, value.len)
+        Store::write(address_domain, base, value.len)
     }
 
-    fn read_at_offset_internal(
+    fn read_at_offset(
         address_domain: u32, base: StorageBaseAddress, offset: u8
     ) -> SyscallResult<List<T>> {
-        let len: u32 = StorageAccess::read_at_offset_internal(address_domain, base, offset)
-            .unwrap_syscall();
-        let storage_size: u8 = StorageSize::<T>::storage_size();
+        let len: u32 = Store::read_at_offset(address_domain, base, offset).unwrap_syscall();
+        let storage_size: u8 = Store::<T>::size();
         Result::Ok(List { address_domain, base, len, storage_size })
     }
 
-    fn write_at_offset_internal(
+    #[inline(always)]
+    fn write_at_offset(
         address_domain: u32, base: StorageBaseAddress, offset: u8, value: List<T>
     ) -> SyscallResult<()> {
-        StorageAccess::write_at_offset_internal(address_domain, base, offset, value.len)
+        Store::write_at_offset(address_domain, base, offset, value.len)
     }
 
-    fn size_internal(value: List<T>) -> u8 {
-        StorageAccess::size_internal(value.len)
+    #[inline(always)]
+    fn size() -> u8 {
+        // we're only storing `len`, an u8
+        Store::<u8>::size()
     }
 }
