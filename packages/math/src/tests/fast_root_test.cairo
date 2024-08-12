@@ -31,3 +31,9 @@ fn fast_nr_optimize_test_1() {
 fn fast_nr_optimize_test_2() {
     assert_eq!(fast_nr_optimize(10, 1, 10), 10);
 }
+
+#[test]
+#[available_gas(5000000)]
+fn fast_nr_optimize_test_3() {
+    fast_nr_optimize(3_u128, 20_u128, 3_u32);
+}

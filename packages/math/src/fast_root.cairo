@@ -57,9 +57,16 @@ pub fn fast_cbrt(x: u128, iter: usize) -> u128 {
 /// # Returns
 /// * ` u128 ` - The result of the division with rounding (e.g., 5/3 = 2, 7/3 = 2, 8/3 = 3)
 pub fn round_div(a: u128, b: u128) -> u128 {
+    // If b is 0, return a default value
+    if b == 0 {
+        return 0;
+    }
+
     let remained = a % b;
-    if b - remained <= remained {
+    // Round up if the remainder is at least half of the divisor
+    if 2 * remained >= b {
         return a / b + 1;
     }
+
     return a / b;
 }
